@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawnMspConnection, type SpawnedMspConnection } from "@muse-code/sdk";
 import type { Tool, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { CallToolResult, McpBridge } from "./bridge.ts";
-import { type InputPart, MCP_TOOLSET } from "./convert.ts";
+import { type InputPart, MCP_TOOLSET, toolArgsJson } from "./convert.ts";
 import { cleanEnv, removeHostConfig, type SkillsOff, writeHostConfig } from "./home.ts";
 import type { CatalogRow, MuseEffort } from "./models.ts";
 import { AsyncQueue, errorText } from "./util.ts";
@@ -34,7 +35,7 @@ export interface HostEnv {
 	baseDir: string;
 	/** The user's Muse Code config directory (login state). */
 	userConfigDir: string;
-	skillsOff: () => Promise<SkillsOff>;
+	skillsOff: (signal?: AbortSignal) => Promise<SkillsOff>;
 	env: Record<string, string | undefined>;
 	/** Extra Muse Code settings for every host (tests use a fake endpoint). */
 	settingsOverlay?: Record<string, unknown>;
@@ -79,6 +80,8 @@ export interface MuseSession {
 	readonly events: AsyncQueue<HostEvent>;
 	readonly exited: Promise<void>;
 	readonly stderr: string;
+	/** A qualified raw log supplies complete batches, possibly after typed tool-start events. */
+	readonly rawLog?: boolean;
 	startTurn(input: InputPart[], effort: MuseEffort): Promise<void>;
 	steer(input: InputPart[]): Promise<void>;
 	deliver(result: ToolResultMessage): void;
@@ -108,6 +111,7 @@ export class MuseHost implements MuseSession {
 	private markExited!: () => void;
 
 	private spawned?: SpawnedMspConnection;
+	private pendingHost?: ReturnType<typeof spawnMspConnection>;
 	private xdg?: string;
 	private routeId?: string;
 	private logSubscription?: number;
@@ -129,15 +133,23 @@ export class MuseHost implements MuseSession {
 		});
 	}
 
-	static async open(spec: HostSpec, host: HostEnv): Promise<MuseHost> {
+	static async open(spec: HostSpec, host: HostEnv, requestSignal?: AbortSignal): Promise<MuseHost> {
+		const signal = AbortSignal.any([AbortSignal.timeout(60_000), ...(requestSignal ? [requestSignal] : [])]);
+		signal.throwIfAborted();
 		const h = new MuseHost(spec, host);
+		const abort = () => h.close();
+		signal.addEventListener("abort", abort, { once: true });
 		try {
-			await h.init();
+			await h.init(signal);
+			signal.throwIfAborted();
+			return h;
 		} catch (e) {
 			h.close();
-			throw new Error(errorText(e, h.stderr));
+			await h.exited;
+			throw new Error(errorText(signal.aborted ? signal.reason : e, h.stderr));
+		} finally {
+			signal.removeEventListener("abort", abort);
 		}
-		return h;
 	}
 
 	/** Whether every tool call of a response arrives up front (`tool_calls`), not one at a time. */
@@ -149,32 +161,43 @@ export class MuseHost implements MuseSession {
 		this.host.debug?.(msg);
 	}
 
-	private async init(): Promise<void> {
+	private async init(signal: AbortSignal): Promise<void> {
 		const { spec, host } = this;
+		const skillsOff = await host.skillsOff(signal);
+		signal.throwIfAborted();
 		const id = randomUUID().replace(/-/g, "");
 		let mcp: { url: string; token: string } | undefined;
 		if (!spec.ephemeral) {
 			mcp = await host.bridge.register(id, spec.tools, (callId) => this.onToolCall(callId));
 			this.routeId = id;
+			signal.throwIfAborted();
 		}
 		this.xdg = writeHostConfig(host.baseDir, id, host.userConfigDir, {
 			systemPrompt: spec.systemPrompt,
 			toolset: spec.ephemeral ? [] : [MCP_TOOLSET],
 			...(mcp ? { mcpUrl: mcp.url } : {}),
-			skillsOff: await host.skillsOff(),
+			skillsOff,
 			...(host.settingsOverlay ? { overlay: host.settingsOverlay } : {}),
 		});
-		const args = ["serve", "--contributor-mode", host.contributorMode, "--disable-request-user-input"];
+		// Muse 1.4.15+ starts MCP only in trusted workspaces. Trust an empty private
+		// workspace, never the user's project: Pi alone owns project rules, hooks and tools.
+		// Keep it across host restarts: Muse records this path in resumable sessions.
+		const workspaceRoot = join(host.baseDir, "workspace");
+		mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
+		const args = ["serve", "--trust-workspace", "--contributor-mode", host.contributorMode, "--disable-request-user-input"];
 		if (spec.ephemeral) args.push("--no-session-log");
+		signal.throwIfAborted();
 		const handshake = spawnMspConnection({
 			command: host.museBin,
+			shutdownTimeoutMs: 1000,
 			args,
-			cwd: spec.cwd,
+			cwd: workspaceRoot,
 			env: cleanEnv({ ...host.env, XDG_CONFIG_HOME: this.xdg, PI_MUSE_MCP_AUTH: mcp ? `Bearer ${mcp.token}` : "" }),
 			onStderr: (d) => {
 				this.stderrTail = (this.stderrTail + d).slice(-4000);
 			},
 		});
+		this.pendingHost = handshake;
 		handshake.onNotification((n) => this.onNotification(n.method, (n.params ?? {}) as any));
 		handshake.onServerRequest(async (r) => this.onServerRequest(r.method, (r.params ?? {}) as any));
 		void handshake.exited.then(
@@ -182,18 +205,23 @@ export class MuseHost implements MuseSession {
 			() => this.onExit(),
 		);
 		this.spawned = await handshake.initialize({ clientInfo: CLIENT, capabilities: { experimentalApi: true, requestedCapabilities: ["rawLog"] } });
+		signal.throwIfAborted();
 		const c = this.spawned.connection;
 		const open = spec.open;
 		let result: any;
-		if (open.kind === "fresh") result = await c.command("session/start", { workspaceRoot: spec.cwd, modelId: spec.model, approvalMode: "allowAll" });
+		if (open.kind === "fresh") result = await c.command("session/start", { workspaceRoot, modelId: spec.model, approvalMode: "allowAll" });
 		else if (open.kind === "resume") result = await c.command("session/resume", { sessionId: open.sessionId, excludeItems: true, modelId: spec.model });
 		else result = await c.command("session/fork", { sessionId: open.sessionId, cutPoint: { lastTurnId: open.turnId }, excludeItems: true });
 		this.sessionId = String(result.session.sessionId);
+		signal.throwIfAborted();
 		if (open.kind !== "fresh") {
 			await c.command("session/setApprovalMode", { sessionId: this.sessionId, mode: "allowAll" });
 			if (open.kind === "fork") await c.command("session/setModel", { sessionId: this.sessionId, model: { modelId: spec.model } });
 		}
-		if (this.spawned.initializeResult.grantedCapabilities.includes("rawLog")) {
+		// rawLog is experimental. Only use its batch payload on the builds qualified here;
+		// other clients retain the stable single-tool path rather than guessing at raw records.
+		const version = this.spawned.initializeResult.serverInfo.version;
+		if (/^1\.4\.(?:14|18)(?:$|[-+])/.test(version) && this.spawned.initializeResult.grantedCapabilities.includes("rawLog")) {
 			try {
 				const streams = (await c.command("log/streams", { sessionId: this.sessionId })) as any;
 				const stream = (streams.streams ?? []).map((s: any) => s.stream).find((s: any) => s?.kind === "session") ?? { kind: "session", id: this.sessionId };
@@ -211,7 +239,7 @@ export class MuseHost implements MuseSession {
 			const payload = p.record?.payload;
 			const ev = payload?.event;
 			if (payload?.kind === "run" && ev?.kind === "assistant_tool_calls_committed" && Array.isArray(ev.tool_calls)) {
-				this.events.push({ type: "tool_calls", calls: ev.tool_calls.map((c: any) => ({ callId: String(c.call_id), name: String(c.name), args: typeof c.args === "string" ? c.args : JSON.stringify(c.args ?? {}) })) });
+				this.events.push({ type: "tool_calls", calls: ev.tool_calls.map((c: any) => ({ callId: String(c.call_id), name: String(c.name), args: toolArgsJson(c.args) })) });
 			}
 			return;
 		}
@@ -226,7 +254,7 @@ export class MuseHost implements MuseSession {
 				this.kinds.set(it.itemId, it.kind);
 				if (it.kind === "agentMessage") this.events.push({ type: "text_start", itemId: it.itemId });
 				else if (it.kind === "reasoning") this.events.push({ type: "thinking_start", itemId: it.itemId });
-				else if (it.kind === "toolCall" && typeof it.callId === "string") this.events.push({ type: "tool_started", call: { callId: it.callId, name: String(it.tool ?? ""), args: String(it.args ?? "") } });
+				else if (it.kind === "toolCall" && typeof it.callId === "string") this.events.push({ type: "tool_started", call: { callId: it.callId, name: String(it.tool ?? ""), args: toolArgsJson(it.args) } });
 				break;
 			}
 			case "item/delta": {
@@ -343,12 +371,14 @@ export class MuseHost implements MuseSession {
 	}
 
 	close(): void {
-		if (this.dead) return;
+		// Cleanup can be called again after cancellation during preparatory I/O.
+		// Resources acquired just before the abort was observed still belong here.
 		this.dead = true;
 		if (this.routeId) this.host.bridge.unregister(this.routeId);
 		for (const p of this.parked.values()) p.reject(new Error("Muse host closed"));
 		this.parked.clear();
 		if (this.spawned) void this.spawned.close().catch(() => {});
+		else if (this.pendingHost) void this.pendingHost.close().catch(() => {});
 		else this.onExit();
 	}
 
@@ -369,23 +399,27 @@ export class MuseHost implements MuseSession {
 }
 
 /** Muse Code's live model catalog, or undefined when it cannot be read (no login, no network). */
-export async function listModels(host: Omit<HostEnv, "bridge" | "skillsOff">): Promise<CatalogRow[] | undefined> {
+export async function listModels(host: Omit<HostEnv, "bridge" | "skillsOff">, requestSignal?: AbortSignal): Promise<CatalogRow[] | undefined> {
+	const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(requestSignal ? [requestSignal] : [])]);
+	if (signal.aborted) return undefined;
 	const id = `models-${randomUUID().replace(/-/g, "")}`;
 	const xdg = writeHostConfig(host.baseDir, id, host.userConfigDir, { systemPrompt: "", toolset: [], skillsOff: {}, ...(host.settingsOverlay ? { overlay: host.settingsOverlay } : {}) });
-	const handshake = spawnMspConnection({ command: host.museBin, args: ["serve", "--no-session-log"], env: cleanEnv({ ...host.env, XDG_CONFIG_HOME: xdg }) });
+	const handshake = spawnMspConnection({ command: host.museBin, args: ["serve", "--no-session-log"], shutdownTimeoutMs: 1000, env: cleanEnv({ ...host.env, XDG_CONFIG_HOME: xdg }) });
+	const abort = () => { void handshake.close().catch(() => undefined); };
+	signal.addEventListener("abort", abort, { once: true });
 	try {
+		signal.throwIfAborted();
 		const spawned = await handshake.initialize({ clientInfo: CLIENT });
-		try {
-			const r = (await spawned.connection.command("model/list", {})) as any;
-			if (r.source !== "providerCatalog" || !Array.isArray(r.models) || r.models.length === 0) return undefined;
-			return r.models as CatalogRow[];
-		} finally {
-			await spawned.close().catch(() => {});
-		}
+		signal.throwIfAborted();
+		const r = (await spawned.connection.command("model/list", {})) as any;
+		signal.throwIfAborted();
+		if (r.source !== "providerCatalog" || !Array.isArray(r.models) || r.models.length === 0) return undefined;
+		return r.models as CatalogRow[];
 	} catch {
-		void handshake.close().catch(() => {});
 		return undefined;
 	} finally {
+		signal.removeEventListener("abort", abort);
+		await handshake.close().catch(() => undefined);
 		removeHostConfig(xdg);
 	}
 }

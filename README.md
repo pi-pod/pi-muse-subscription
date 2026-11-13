@@ -1,4 +1,20 @@
-# pi-muse-subscription
+# @pipod/pi-muse-subscription
+
+The pi-pod fork of [pi-muse-subscription](https://github.com/jkeskikangas/pi-muse-subscription), retaining the upstream MIT license and author attribution. Provider IDs remain `muse-sdk/*`; do not install both packages together.
+
+## pi-pod changes
+
+- Supports `/login muse-sdk` through the official Muse SDK device-code flow, including pipod's remote login UI. Pi stores only a non-secret connection marker; official-client credentials remain on the machine running inference.
+- Muse 1.4.18 requires trust before it loads MCP tools. Only an empty, private workspace is trusted; your project rules, hooks and extra MCP servers are not loaded a second time. Pi tools still operate in Pi's real working directory.
+- Complete tool batches wait for the qualified raw-log event even when a typed tool-start event arrives first. Raw batches are enabled only on Muse 1.4.14 and 1.4.18; other builds use the stable single-call path.
+- Shutdown waits for Muse's session writer lease before a Pi reload or replacement, so resume does not spuriously fork.
+- `pipod.clientExtensions: []` declares that the provider runs only in the pod, not again in the launcher's rendering process. This requires pipod's client-entrypoint support; older pipod versions do not honor that declaration.
+
+### Connect inside pipod
+
+Install the official `muse` executable inside the pod (for example in the template init script), then use `/login muse-sdk` in the attached Pi session and approve its device code in your browser. Select `/model muse-sdk/muse-spark-1.3`. A laptop login or a copied Pi marker does not authenticate a different pod. Official-client state must be persisted with that pod's home for reconnects. Account-level `pipod credentials` sharing is not supported for this client-managed login.
+
+This fork does not promise subscription entitlement or billing classification from a local login marker. Use the official client's account/usage surfaces to confirm your plan. No API-key environment fallback is passed to the child.
 
 Use your **Muse Code subscription** in [pi](https://pi.dev). This pi provider runs Meta's Muse
 models (Muse Spark, Muse Wonder) through the [Muse Code SDK](https://github.com/meta-models/muse-code-sdk)
@@ -6,12 +22,12 @@ and a local `muse serve` host, while pi keeps its own agent loop, tools, system 
 and session tree. Muse Code serves only as the authenticated model transport.
 
 ```
-pi install npm:pi-muse-subscription
-# or: pi install git:github.com/jkeskikangas/pi-muse-subscription
+pi install npm:@pipod/pi-muse-subscription
+# or: pi install git:github.com/pi-pod/pi-muse-subscription
 /model muse-sdk/muse-spark-1.3
 ```
 
-Requirements: pi ≥ 1.0, Node ≥ 20, and Muse Code ≥ 1.4.14 signed in with your subscription
+Qualified host: Pi 1.5.2, Node 26, and Muse Code 1.4.18. Requires Node ≥ 22.19 and Muse Code ≥ 1.4.14 signed in with your subscription
 (`brew install muse-code` or `curl -fsSL https://dev.meta.ai/install.sh | sh`, then `muse` → `/login`).
 
 A Muse Code subscription key is accepted only from the Muse Code client. pi's built-in `meta`
@@ -65,7 +81,7 @@ sequenceDiagram
 
 ## Billing and privacy
 
-- **Subscription only.** `META_API_KEY` is removed from Muse Code's environment: Muse Code prefers
+- **Subscription only.** `META_API_KEY` and `MODEL_API_KEY` are removed from Muse Code's environment: Muse Code prefers
   it over the account login, which would move every request to pay-as-you-go billing.
 - **Contributor mode.** Muse Code subscriptions default to Contributor mode, where Meta may train on
   your prompts, code and outputs in exchange for more usage. This provider passes an explicit

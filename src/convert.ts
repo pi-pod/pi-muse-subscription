@@ -7,6 +7,11 @@ export const MCP_SERVER = "pi";
 /** Muse Code's toolset selector for every tool of that server, and nothing else. */
 export const MCP_TOOLSET = `mcp__${MCP_SERVER}__*`;
 
+/** Preserve invalid/missing arguments for strict validation; never invent an empty object. */
+export function toolArgsJson(value: unknown): string {
+	return typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+}
+
 /** A transcript message the provider consumes: everything but the leading system message. */
 export type TurnMessage = UserMessage | AssistantMessage | ToolResultMessage | SystemMessage;
 

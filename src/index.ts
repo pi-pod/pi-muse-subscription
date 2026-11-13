@@ -5,9 +5,10 @@ import { type ExtensionAPI, getAgentDir, getDocsPath, getExamplesPath, getReadme
 import { AnchorRegistry } from "./anchors.ts";
 import { McpBridge } from "./bridge.ts";
 import { museConfigDir, resolveConfig } from "./config.ts";
-import { listSkillsOff, type SkillsOff, sweepHostConfigs } from "./home.ts";
+import { listSkillsOff, sweepHostConfigs } from "./home.ts";
 import { type HostEnv, listModels, MuseHost } from "./host.ts";
 import { museModels } from "./models.ts";
+import { loginMuse } from "./login.ts";
 import { applyMusePrompt } from "./prompt.ts";
 import { API, MuseSdkProvider } from "./provider.ts";
 
@@ -28,7 +29,6 @@ export default function (pi: ExtensionAPI) {
 	const userConfigDir = museConfigDir(env, homedir());
 	sweepHostConfigs(baseDir);
 
-	let skills: Promise<SkillsOff> | undefined;
 	const bridge = new McpBridge();
 	const hostEnv: HostEnv = {
 		museBin,
@@ -36,7 +36,7 @@ export default function (pi: ExtensionAPI) {
 		bridge,
 		baseDir,
 		userConfigDir,
-		skillsOff: () => (skills ??= listSkillsOff(museBin, baseDir, env)),
+		skillsOff: (signal) => listSkillsOff(museBin, baseDir, env, signal),
 		env,
 		debug,
 		// Test hook: extra Muse Code settings, e.g. a fake model endpoint for offline end-to-end tests.
@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 	};
 	const provider = new MuseSdkProvider({
 		registry: new AnchorRegistry(join(baseDir, "anchors.jsonl")),
-		openSession: (spec) => MuseHost.open(spec, hostEnv),
+		openSession: (spec, signal) => MuseHost.open(spec, hostEnv, signal),
 		...(config.maxSessions ? { maxSessions: config.maxSessions } : {}),
 		...(config.idleMinutes ? { idleMs: config.idleMinutes * 60_000 } : {}),
 		debug,
@@ -55,6 +55,12 @@ export default function (pi: ExtensionAPI) {
 			name: "Muse (subscription via Muse Code SDK)",
 			// Muse Code authenticates itself; pi only needs a non-empty key to treat the provider as configured.
 			apiKey: "muse-code-login",
+			oauth: {
+				name: "Muse Code subscription (official client)",
+				login: (callbacks) => loginMuse(museBin, env, callbacks),
+				refreshToken: async (credential, signal) => { signal.throwIfAborted(); return credential; },
+				getApiKey: () => "muse-code-login",
+			},
 			api: API as any,
 			baseUrl: "muse-code-sdk://local",
 			models,
@@ -64,21 +70,27 @@ export default function (pi: ExtensionAPI) {
 
 	// Pick up the models the user's plan offers from Muse Code's live catalog.
 	let refreshed = false;
+	let disposed = false;
+	const discoveryController = new AbortController();
+	let discovery: Promise<void> | undefined;
 	pi.on("session_start", () => {
 		if (refreshed) return;
 		refreshed = true;
-		void listModels(hostEnv).then((rows) => {
-			if (rows) register(museModels(rows));
+		discovery = listModels(hostEnv, discoveryController.signal).then((rows) => {
+			if (rows && !disposed) register(museModels(rows));
 		});
 	});
 
 	const docs = { readme: getReadmePath(), docs: getDocsPath(), examples: getExamplesPath() };
 	pi.on("before_agent_start", (event, ctx) => applyMusePrompt(event, ctx.model, PROVIDER, config.promptMode ?? "muse", docs));
 
-	const shutdown = () => {
-		provider.shutdown();
+	const onExit = () => { disposed = true; discoveryController.abort(); void provider.shutdown(); bridge.close(); };
+	pi.on("session_shutdown", async () => {
+		disposed = true;
+		discoveryController.abort();
+		process.removeListener("exit", onExit);
+		await Promise.all([provider.shutdown(), discovery]);
 		bridge.close();
-	};
-	pi.on("session_shutdown", shutdown);
-	process.once("exit", shutdown);
+	});
+	process.once("exit", onExit);
 }

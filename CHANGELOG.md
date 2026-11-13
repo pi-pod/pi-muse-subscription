@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (2026-11-13)
+
+First pi-pod release, published as `@pipod/pi-muse-subscription` from the upstream 0.1.0 fork.
+
+- Add official-client device-code sign-in to `/login muse-sdk`, including pipod's remote auth UI. Pi stores a non-secret marker, not the client's tokens.
+- Fix Muse 1.4.18 MCP admission by trusting an empty private workspace, without importing project hooks or rules a second time.
+- Preserve complete tool batches when typed tool-start notifications precede the qualified experimental raw log.
+- Await session-lease release on shutdown and remove stale exit listeners across Pi reloads.
+- Own cancellation during startup and while tools are parked; bound catalog discovery and cancel it on shutdown.
+- Reject malformed or non-object tool arguments instead of silently executing an empty argument object.
+- Declare pod-only execution with `pipod.clientExtensions: []`; retain provider ID `muse-sdk`.
+- Pin development to Pi 1.5.2 and use TypeBox's own exports in the existing checks.
+
 ## 0.1.0 (2026-10-30)
 
 Initial release.

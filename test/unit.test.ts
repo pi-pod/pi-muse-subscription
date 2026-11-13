@@ -3,10 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { normalizeContext, Type, type Message } from "@earendil-works/pi-ai";
+import { normalizeContext, type Message } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { AnchorRegistry } from "../src/anchors.ts";
 import { resolveConfig } from "../src/config.ts";
-import { historyText, piToolName, readTranscript, turnInput } from "../src/convert.ts";
+import { historyText, piToolName, readTranscript, toolArgsJson, turnInput } from "../src/convert.ts";
 import { cleanEnv, hostSettings } from "../src/home.ts";
 import { museEffort, museModels } from "../src/models.ts";
 
@@ -17,6 +18,15 @@ describe("convert", () => {
 		assert.equal(piToolName("mcp__pi__read"), "read");
 		assert.equal(piToolName("mcp__pi.bash"), "bash");
 		assert.equal(piToolName("muse.read_file"), undefined);
+	});
+
+	it("preserves malformed raw and typed tool arguments for rejection", () => {
+		assert.equal(toolArgsJson(undefined), "");
+		assert.equal(toolArgsJson(null), "null");
+		assert.equal(toolArgsJson([]), "[]");
+		assert.equal(toolArgsJson("{bad"), "{bad");
+		assert.equal(toolArgsJson({}), "{}");
+		assert.equal(toolArgsJson('{"path":"a"}'), '{"path":"a"}');
 	});
 
 	it("chains transcript states by content, not timestamps", () => {

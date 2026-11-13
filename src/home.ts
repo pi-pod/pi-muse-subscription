@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -89,11 +90,11 @@ export function sweepHostConfigs(baseDir: string, olderThanMs = 24 * 3600_000): 
 }
 
 /** Every skill Muse Code would load for this user, as an all-off activation map. */
-export async function listSkillsOff(museBin: string, baseDir: string, env: Record<string, string | undefined>): Promise<SkillsOff> {
-	const xdg = join(baseDir, "hosts", `skills-${process.pid}`);
+export async function listSkillsOff(museBin: string, baseDir: string, env: Record<string, string | undefined>, signal?: AbortSignal): Promise<SkillsOff> {
+	const xdg = join(baseDir, "hosts", `skills-${process.pid}-${randomUUID()}`);
 	mkdirSync(join(xdg, "muse"), { recursive: true, mode: 0o700 });
 	try {
-		const { stdout } = await run(museBin, ["skills", "list", "--json"], { env: cleanEnv({ ...env, XDG_CONFIG_HOME: xdg }), timeout: 30_000, maxBuffer: 16 << 20 });
+		const { stdout } = await run(museBin, ["skills", "list", "--json"], { env: cleanEnv({ ...env, XDG_CONFIG_HOME: xdg }), signal, timeout: 30_000, maxBuffer: 16 << 20 });
 		const parsed = JSON.parse(stdout);
 		const rows: { scope?: string; path?: string }[] = Array.isArray(parsed) ? parsed : (parsed.skills ?? []);
 		const off: SkillsOff = {};
@@ -114,6 +115,7 @@ export function cleanEnv(env: Record<string, string | undefined>): Record<string
 	const out: Record<string, string> = {};
 	for (const [k, v] of Object.entries(env)) if (v !== undefined) out[k] = v;
 	delete out.META_API_KEY;
+	delete out.MODEL_API_KEY;
 	delete out.MUSE_CONTRIBUTOR_MODE;
 	// Muse Code may otherwise replace its own binary under a running host.
 	out.MUSE_NO_AUTO_UPDATE = "1";

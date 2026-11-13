@@ -11,7 +11,7 @@ export const API = "muse-code-sdk";
 export interface ProviderOptions {
 	registry: AnchorRegistry;
 	/** Starts a Muse Code session (MuseHost.open in production; tests substitute a fake). */
-	openSession: (spec: HostSpec) => Promise<MuseSession>;
+	openSession: (spec: HostSpec, signal?: AbortSignal) => Promise<MuseSession>;
 	/** Live Muse hosts kept for reuse (one per concurrent conversation). */
 	maxSessions?: number;
 	/** Close a host idle this long; the conversation resumes from Muse Code's session on its next turn. */
@@ -31,6 +31,10 @@ export class MuseSdkProvider {
 	private readonly all = new Set<MuseSession>();
 	/** Hosts a provider call is reading right now. */
 	private readonly active = new Set<MuseSession>();
+	private readonly lifetime = new AbortController();
+	private readonly opening = new Set<Promise<MuseSession>>();
+	/** Cancellation remains owned while Muse waits for Pi's tool results. */
+	private readonly parkedCancellation = new Map<MuseSession, () => void>();
 	private readonly opts: Required<Omit<ProviderOptions, "debug">> & Pick<ProviderOptions, "debug">;
 	private timer?: NodeJS.Timeout;
 	lastRoute?: Route;
@@ -62,6 +66,9 @@ export class MuseSdkProvider {
 
 	private async run(model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions | undefined, stream: AssistantMessageEventStream, output: AssistantMessage): Promise<void> {
 		let session: MuseSession | undefined;
+		const signal = options?.signal ? AbortSignal.any([options.signal, this.lifetime.signal]) : this.lifetime.signal;
+		let releaseCancellation: (() => void) | undefined;
+		let keepCancellation = false;
 		let started = false;
 		const fail = (reason: "error" | "aborted", message: string) => {
 			output.stopReason = reason;
@@ -71,6 +78,7 @@ export class MuseSdkProvider {
 			stream.end();
 		};
 		try {
+			signal.throwIfAborted();
 			if (options?.maxTokens === 1) {
 				// A cache-warming replay. Muse Code keeps its own prompt cache per session; answer without
 				// touching a live session (a replay of an older context would otherwise end it).
@@ -94,11 +102,19 @@ export class MuseSdkProvider {
 				ephemeral: t.tools.length === 0,
 			};
 
-			const attached = await this.attach(t, spec);
+			const attached = await this.attach(t, spec, signal);
 			session = attached.session;
+			this.parkedCancellation.get(session)?.();
+			this.parkedCancellation.delete(session);
+			const owned = session;
+			const abort = () => this.drop(owned);
+			signal.addEventListener("abort", abort, { once: true });
+			releaseCancellation = () => signal.removeEventListener("abort", abort);
+			signal.throwIfAborted();
 			this.lastRoute = attached.route;
 			this.log(`route=${attached.route} session=${session.sessionId} prefix=${attached.prefix}/${t.messages.length}`);
 			await options?.onPayload?.({ sessionId: session.sessionId, route: attached.route, model: model.id, tail: t.messages.length - attached.prefix }, model);
+			signal.throwIfAborted();
 
 			// Hand pi's new messages to Muse Code.
 			const tail = t.messages.slice(attached.prefix);
@@ -117,7 +133,7 @@ export class MuseSdkProvider {
 			session.chain = t.chain[t.messages.length];
 			session.count = t.messages.length;
 
-			const step = await this.readStep(session, model, options, stream, output, () => {
+			const step = await this.readStep(session, model, { ...options, signal }, stream, output, () => {
 				started = true;
 			});
 			if (step === "aborted") return fail("aborted", "Request was aborted");
@@ -135,13 +151,18 @@ export class MuseSdkProvider {
 			}
 			session.awaiting = new Set(output.content.filter((c): c is ToolCall => c.type === "toolCall").map((c) => c.id));
 			if (output.stopReason !== "toolUse") session.awaiting.clear();
+			else if (releaseCancellation) {
+				this.parkedCancellation.set(session, releaseCancellation);
+				keepCancellation = true;
+			}
 			stream.push({ type: "done", reason: output.stopReason as Extract<StopReason, "stop" | "length" | "toolUse">, message: output });
 			stream.end();
 			if (spec.ephemeral) this.drop(session);
 		} catch (e) {
 			if (session) this.drop(session);
-			fail(options?.signal?.aborted ? "aborted" : "error", errorText(e, session?.stderr));
+			fail(signal.aborted ? "aborted" : "error", errorText(e, session?.stderr));
 		} finally {
+			if (!keepCancellation) releaseCancellation?.();
 			if (session) {
 				session.busy = false;
 				this.active.delete(session);
@@ -156,7 +177,8 @@ export class MuseSdkProvider {
 	 * completed turn (resumed, or forked when that turn is not the session's last); a fresh session
 	 * whose first turn carries the earlier conversation as text; a fresh one.
 	 */
-	private async attach(t: Transcript, spec: Omit<HostSpec, "open">): Promise<{ session: MuseSession; prefix: number; route: Route; history?: string }> {
+	private async attach(t: Transcript, spec: Omit<HostSpec, "open">, signal: AbortSignal): Promise<{ session: MuseSession; prefix: number; route: Route; history?: string }> {
+		signal.throwIfAborted();
 		const n = t.messages.length;
 		for (const s of this.sessions) {
 			if (s.dead || s.busy || s.spec.ephemeral !== spec.ephemeral || s.spec.systemPrompt !== t.systemPrompt || s.spec.toolsHash !== t.toolsHash || s.spec.cwd !== spec.cwd) continue;
@@ -170,7 +192,10 @@ export class MuseSdkProvider {
 			s.lastUsed = Date.now();
 			if (s.model !== spec.model && s.awaiting.size === 0) {
 				try {
-					await s.setModel(spec.model);
+					const abort = () => this.drop(s);
+					signal.addEventListener("abort", abort, { once: true });
+					try { signal.throwIfAborted(); await s.setModel(spec.model); }
+					finally { signal.removeEventListener("abort", abort); }
 				} catch (e) {
 					s.busy = false;
 					this.active.delete(s);
@@ -178,6 +203,7 @@ export class MuseSdkProvider {
 					throw e;
 				}
 			}
+			signal.throwIfAborted();
 			return { session: s, prefix: s.count, route: "live" };
 		}
 
@@ -192,12 +218,14 @@ export class MuseSdkProvider {
 				// A live host on that session is stale by now; it must be gone before the session is reopened.
 				for (const s of this.sessions) if (s.sessionId === a.sessionId) this.drop(s);
 				await this.waitExited(a.sessionId);
+				signal.throwIfAborted();
 				const atTail = this.opts.registry.tail(a.sessionId) === a.turnId;
 				const route: Route = atTail ? "resume" : "fork";
 				try {
-					const session = await this.open({ ...spec, open: atTail ? { kind: "resume", sessionId: a.sessionId } : { kind: "fork", sessionId: a.sessionId, turnId: a.turnId } }, t.chain[k], k);
+					const session = await this.open({ ...spec, open: atTail ? { kind: "resume", sessionId: a.sessionId } : { kind: "fork", sessionId: a.sessionId, turnId: a.turnId } }, t.chain[k], k, signal);
 					return { session, prefix: k, route };
 				} catch (e) {
+					signal.throwIfAborted();
 					this.log(`${route} ${a.sessionId}@${a.turnId} failed (${errorText(e)}); trying a shorter prefix`);
 				}
 			}
@@ -208,21 +236,31 @@ export class MuseSdkProvider {
 			if (m.role === "assistant") last = i;
 		});
 		if (last >= 0) {
-			const session = await this.open({ ...spec, open: { kind: "fresh" } }, t.chain[last + 1], last + 1);
+			const session = await this.open({ ...spec, open: { kind: "fresh" } }, t.chain[last + 1], last + 1, signal);
 			return { session, prefix: last + 1, route: "synth", history: historyText(t.messages.slice(0, last + 1)) };
 		}
-		const session = await this.open({ ...spec, open: { kind: "fresh" } }, t.chain[0], 0);
+		const session = await this.open({ ...spec, open: { kind: "fresh" } }, t.chain[0], 0, signal);
 		return { session, prefix: 0, route: "fresh" };
 	}
 
-	private async open(spec: HostSpec, chain: string, count: number): Promise<MuseSession> {
-		const session = await this.opts.openSession(spec);
+	private async open(spec: HostSpec, chain: string, count: number, signal: AbortSignal): Promise<MuseSession> {
+		signal.throwIfAborted();
+		const pending = this.opts.openSession(spec, signal);
+		this.opening.add(pending);
+		let session: MuseSession;
+		try { session = await pending; }
+		finally { this.opening.delete(pending); }
+		this.track(session);
+		if (signal.aborted) {
+			this.drop(session);
+			await this.waitExited(session.sessionId);
+			signal.throwIfAborted();
+		}
 		session.chain = chain;
 		session.count = count;
 		session.busy = true;
 		this.active.add(session);
 		this.sessions.push(session);
-		this.track(session);
 		this.evict();
 		return session;
 	}
@@ -264,12 +302,12 @@ export class MuseSdkProvider {
 			for (const c of calls) {
 				const name = piToolName(c.name);
 				if (!name || session.announced.has(c.callId)) continue;
+				let args: ToolCall["arguments"];
+				try { args = JSON.parse(c.args); }
+				catch { throw new Error(`Muse returned invalid JSON arguments for ${name}`); }
+				if (args === null || typeof args !== "object" || Array.isArray(args)) throw new Error(`Muse returned non-object arguments for ${name}`);
 				session.announced.add(c.callId);
 				start();
-				let args: ToolCall["arguments"] = {};
-				try {
-					args = c.args ? JSON.parse(c.args) : {};
-				} catch {}
 				const call: ToolCall = { type: "toolCall", id: c.callId, name, arguments: args };
 				blocks.push(call);
 				const i = blocks.length - 1;
@@ -359,7 +397,10 @@ export class MuseSdkProvider {
 						}
 						break;
 					case "tool_started":
-						// Without the raw log, calls surface one at a time as Muse Code starts them.
+						// View events and raw-log subscriptions are separate streams. On 1.4.18
+						// the first typed tool start can precede the committed batch notification.
+						// Do not return early and split a qualified batch into individual calls.
+						if (session.rawLog) break;
 						if (announce([ev.call])) {
 							output.stopReason = "toolUse";
 							return { ok: true, turnEnded: false, completed: false };
@@ -385,6 +426,8 @@ export class MuseSdkProvider {
 	private closing = new Map<string, Promise<void>>();
 
 	private drop(s: MuseSession): void {
+		this.parkedCancellation.get(s)?.();
+		this.parkedCancellation.delete(s);
 		s.close();
 		this.sessions = this.sessions.filter((x) => x !== s);
 		if (!s.sessionId) return;
@@ -438,14 +481,21 @@ export class MuseSdkProvider {
 		}
 	}
 
-	shutdown(): void {
+	async shutdown(): Promise<void> {
+		this.lifetime.abort();
+		await Promise.allSettled([...this.opening]);
 		for (const s of new Set([...this.sessions, ...this.all])) this.drop(s);
+		// Pi awaits session_shutdown before /reload or /new binds the replacement.
+		// Releasing Muse's writer leases first avoids a spurious sessionInUse fork.
+		await Promise.all([...this.closing.keys()].map((id) => this.waitExited(id)));
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
 	}
 }
 
 function turnErrorText(error: { kind?: string; message?: string } | undefined, reason: string | undefined): string {
 	if (error?.kind === "authRequired") {
-		return "Muse Code is not signed in. Run `muse` in a terminal and sign in with /login (your Muse Code subscription), then retry.";
+		return "Muse Code is not signed in on this machine. Run /login muse-sdk in Pi (also inside a pipod session), or sign in with the official muse CLI, then retry.";
 	}
 	return [error?.message, reason].filter(Boolean).join(" ") || `Muse Code turn failed${error?.kind ? ` (${error.kind})` : ""}`;
 }

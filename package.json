@@ -1,6 +1,6 @@
 {
-  "name": "pi-muse-subscription",
-  "version": "0.1.0",
+  "name": "@pipod/pi-muse-subscription",
+  "version": "0.2.0",
   "description": "Meta Muse models in pi through the Muse Code SDK on your Muse Code subscription, with pi's own agent loop, tools and prompt.",
   "keywords": [
     "pi-package",
@@ -15,15 +15,16 @@
   "author": "Jarno Keskikangas",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jkeskikangas/pi-muse-subscription.git"
+    "url": "git+https://github.com/pi-pod/pi-muse-subscription.git"
   },
-  "homepage": "https://github.com/jkeskikangas/pi-muse-subscription#readme",
+  "homepage": "https://github.com/pi-pod/pi-muse-subscription#readme",
+  "publishConfig": { "access": "public" },
   "bugs": {
-    "url": "https://github.com/jkeskikangas/pi-muse-subscription/issues"
+    "url": "https://github.com/pi-pod/pi-muse-subscription/issues"
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "files": [
     "src",
@@ -35,6 +36,9 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "pipod": {
+    "clientExtensions": []
   },
   "scripts": {
     "test": "node --experimental-strip-types --test --test-timeout 20000 test/unit.test.ts test/prompt.test.ts",
@@ -48,12 +52,12 @@
     "@muse-code/sdk": "1.4.14"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.0.0",
-    "@earendil-works/pi-coding-agent": ">=1.0.0"
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^1.1.0",
-    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@types/node": "^26.6.4",
     "typebox": "^1.3.34",
     "typescript": "^7.0.2"

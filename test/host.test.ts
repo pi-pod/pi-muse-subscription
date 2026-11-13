@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { normalizeContext, Type, type AssistantMessage, type Message, type Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type AssistantMessage, type Message, type Model } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { AnchorRegistry } from "../src/anchors.ts";
 import { McpBridge } from "../src/bridge.ts";
 import { listSkillsOff, type SkillsOff } from "../src/home.ts";
@@ -55,9 +56,14 @@ after(async () => {
 	await fake.close();
 });
 
-function harness(registryFile = join(root, `anchors-${Math.random()}.jsonl`)) {
+function harness(registryFile = join(root, `anchors-${Math.random()}.jsonl`), overrides: Partial<HostEnv> = {}) {
 	const cwd = mkdtempSync(join(root, "ws-"));
-	const provider = new MuseSdkProvider({ registry: new AnchorRegistry(registryFile), openSession: (spec) => MuseHost.open(spec, hostEnv), cwd: () => cwd });
+	const hosts: MuseHost[] = [];
+	const provider = new MuseSdkProvider({ registry: new AnchorRegistry(registryFile), openSession: async (spec, signal) => {
+		const host = await MuseHost.open(spec, { ...hostEnv, ...overrides }, signal);
+		hosts.push(host);
+		return host;
+	}, cwd: () => cwd });
 	const call = async (messages: Message[], opts: { reasoning?: string; signal?: AbortSignal; tools?: typeof tools } = {}) => {
 		const before = fake.bodies.length;
 		const s = provider.streamSimple(model, normalizeContext({ systemPrompt: SYSTEM, tools: opts.tools ?? tools, messages }), { reasoning: (opts.reasoning ?? "medium") as any, signal: opts.signal });
@@ -66,7 +72,7 @@ function harness(registryFile = join(root, `anchors-${Math.random()}.jsonl`)) {
 		const msg = (await s.result()) as AssistantMessage;
 		return { msg, route: provider.lastRoute, events, requests: fake.bodies.slice(before) };
 	};
-	return { provider, call, registryFile, cwd };
+	return { provider, call, registryFile, cwd, hosts };
 }
 
 describe("muse serve host", () => {
@@ -147,10 +153,10 @@ describe("muse serve host", () => {
 		hist.push(a1.msg, user("second"));
 		const a2 = await h1.call(hist);
 		assert.equal(a2.route, "live");
-		h1.provider.shutdown();
+		await h1.provider.shutdown();
 
 		// A new pi process: the conversation continues from Muse Code's record, not a re-sent transcript.
-		const h2 = new MuseSdkProvider({ registry: new AnchorRegistry(file), openSession: (spec) => MuseHost.open(spec, hostEnv), cwd: () => h1.cwd });
+		const h2 = new MuseSdkProvider({ registry: new AnchorRegistry(file), openSession: (spec, signal) => MuseHost.open(spec, hostEnv, signal), cwd: () => h1.cwd });
 		const call2 = async (messages: Message[]) => {
 			const before = fake.bodies.length;
 			const msg = (await h2.streamSimple(model, normalizeContext({ systemPrompt: SYSTEM, tools, messages }), { reasoning: "medium" as any }).result()) as AssistantMessage;
@@ -223,6 +229,50 @@ describe("muse serve host", () => {
 		assert.ok(a3.route === "fork" || a3.route === "resume", String(a3.route));
 		assert.deepEqual(roleTexts(a3.requests[0], "user"), ["first", "again"]);
 		h.provider.shutdown();
+	});
+
+	it("does not start a host for an already cancelled request", async () => {
+		const h = harness();
+		const controller = new AbortController();
+		controller.abort();
+		try {
+			const result = await h.call([user("cancelled before startup")], { signal: controller.signal });
+			assert.equal(result.msg.stopReason, "aborted");
+			assert.equal(h.hosts.length, 0);
+			assert.equal(result.requests.length, 0);
+		} finally { await h.provider.shutdown(); }
+	});
+
+	it("shutdown cancels a host still preparing without late startup", async () => {
+		let ready!: () => void;
+		const preparing = new Promise<void>((resolve) => { ready = resolve; });
+		const h = harness(undefined, { skillsOff: async (signal) => {
+			assert.ok(signal);
+			ready();
+			return await new Promise<SkillsOff>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+		} });
+		const request = h.call([user("cancel during startup")]);
+		await preparing;
+		await h.provider.shutdown();
+		const result = await request;
+		assert.equal(result.msg.stopReason, "aborted");
+		assert.equal(h.hosts.length, 0);
+		assert.equal(result.requests.length, 0);
+	});
+
+	it("cancels a native turn parked on Pi tool results", async () => {
+		const h = harness();
+		const controller = new AbortController();
+		fake.queue(() => reply({ calls: [{ name: "mcp__pi.read", args: { path: "cancelled.txt" }, id: "call_cancel_park" }] }));
+		try {
+			const result = await h.call([user("read then cancel")], { signal: controller.signal });
+			assert.equal(result.msg.stopReason, "toolUse", result.msg.errorMessage ?? "");
+			assert.equal(h.hosts.length, 1);
+			controller.abort();
+			const stopped = await Promise.race([h.hosts[0].exited.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000).unref())]);
+			assert.equal(stopped, true, "a parked host must not survive cancellation");
+			assert.equal(h.hosts[0].dead, true);
+		} finally { await h.provider.shutdown(); }
 	});
 
 	it("keeps a tool call parked while a pi tool runs for minutes", { skip: !process.env.PI_MUSE_SDK_SLOW, timeout: 15 * 60_000 }, async () => {

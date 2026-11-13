@@ -1,6 +1,6 @@
 {
   "name": "@pipod/pi-muse-subscription",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Meta Muse models in pi through the Muse Code SDK on your Muse Code subscription, with pi's own agent loop, tools and prompt.",
   "keywords": [
     "pi-package",
@@ -18,7 +18,9 @@
     "url": "git+https://github.com/pi-pod/pi-muse-subscription.git"
   },
   "homepage": "https://github.com/pi-pod/pi-muse-subscription#readme",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "bugs": {
     "url": "https://github.com/pi-pod/pi-muse-subscription/issues"
   },

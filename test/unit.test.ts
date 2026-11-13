@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { AnchorRegistry } from "../src/anchors.ts";
 import { resolveConfig } from "../src/config.ts";
 import { historyText, piToolName, readTranscript, toolArgsJson, turnInput } from "../src/convert.ts";
-import { cleanEnv, hostSettings } from "../src/home.ts";
+import { assertMuseSubscription, cleanEnv, hostSettings } from "../src/home.ts";
 import { museEffort, museModels } from "../src/models.ts";
 
 const user = (text: string): Message => ({ role: "user", content: text, timestamp: 1 });
@@ -54,6 +54,19 @@ describe("convert", () => {
 		assert.match(text, /<user>\nq\n<\/user>/);
 		assert.match(text, /<tool_call tool="read" id="t1">\{"path":"a"\}<\/tool_call>/);
 		assert.match(text, /<tool_result tool="read" id="t1" error="true">\nDATA/);
+	});
+});
+
+describe("subscription safety", () => {
+	it("refuses explicitly inactive metadata without inferring entitlement from missing hints", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-muse-account-"));
+		assert.doesNotThrow(() => assertMuseSubscription(dir));
+		writeFileSync(join(dir, "auth.json"), JSON.stringify({ providers: { meta: { subs_active: false } } }));
+		assert.throws(() => assertMuseSubscription(dir), /subscription inactive/);
+		writeFileSync(join(dir, "auth.json"), JSON.stringify({ providers: { meta: { subs_active: true } } }));
+		assert.doesNotThrow(() => assertMuseSubscription(dir));
+		writeFileSync(join(dir, "auth.json"), JSON.stringify({ providers: { meta: {} } }));
+		assert.doesNotThrow(() => assertMuseSubscription(dir));
 	});
 });
 

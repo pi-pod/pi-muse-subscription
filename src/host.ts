@@ -5,7 +5,7 @@ import { spawnMspConnection, type SpawnedMspConnection } from "@muse-code/sdk";
 import type { Tool, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { CallToolResult, McpBridge } from "./bridge.ts";
 import { type InputPart, MCP_TOOLSET, toolArgsJson } from "./convert.ts";
-import { cleanEnv, removeHostConfig, type SkillsOff, writeHostConfig } from "./home.ts";
+import { assertMuseSubscription, cleanEnv, removeHostConfig, type SkillsOff, writeHostConfig } from "./home.ts";
 import type { CatalogRow, MuseEffort } from "./models.ts";
 import { AsyncQueue, errorText } from "./util.ts";
 
@@ -163,6 +163,7 @@ export class MuseHost implements MuseSession {
 
 	private async init(signal: AbortSignal): Promise<void> {
 		const { spec, host } = this;
+		assertMuseSubscription(host.userConfigDir);
 		const skillsOff = await host.skillsOff(signal);
 		signal.throwIfAborted();
 		const id = randomUUID().replace(/-/g, "");
@@ -221,7 +222,7 @@ export class MuseHost implements MuseSession {
 		// rawLog is experimental. Only use its batch payload on the builds qualified here;
 		// other clients retain the stable single-tool path rather than guessing at raw records.
 		const version = this.spawned.initializeResult.serverInfo.version;
-		if (/^1\.4\.(?:14|18)(?:$|[-+])/.test(version) && this.spawned.initializeResult.grantedCapabilities.includes("rawLog")) {
+		if (/^1\.4\.(?:14|18|20)(?:$|[-+])/.test(version) && this.spawned.initializeResult.grantedCapabilities.includes("rawLog")) {
 			try {
 				const streams = (await c.command("log/streams", { sessionId: this.sessionId })) as any;
 				const stream = (streams.streams ?? []).map((s: any) => s.stream).find((s: any) => s?.kind === "session") ?? { kind: "session", id: this.sessionId };
@@ -326,6 +327,7 @@ export class MuseHost implements MuseSession {
 	}
 
 	async startTurn(input: InputPart[], effort: MuseEffort): Promise<void> {
+		assertMuseSubscription(this.host.userConfigDir);
 		this.lastUsed = Date.now();
 		const r = (await this.connection().command("turn/start", { sessionId: this.sessionId, input, reasoningEffort: effort })) as any;
 		if (typeof r.turnId === "string") this.turnId = r.turnId;
@@ -333,12 +335,14 @@ export class MuseHost implements MuseSession {
 
 	/** Add input to the running turn; Muse Code shows it to the model at the next tool boundary. */
 	async steer(input: InputPart[]): Promise<void> {
+		assertMuseSubscription(this.host.userConfigDir);
 		this.lastUsed = Date.now();
 		await this.connection().command("turn/steer", { sessionId: this.sessionId, expectedTurnId: this.turnId, input });
 	}
 
 	/** Answer a parked (or soon to be issued) MCP tool call with pi's result. */
 	deliver(result: ToolResultMessage): void {
+		assertMuseSubscription(this.host.userConfigDir);
 		const id = result.toolCallId;
 		this.awaiting.delete(id);
 		const r: CallToolResult = {

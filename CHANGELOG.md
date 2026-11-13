@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 (2026-11-13)
+
+- Refuse new inference and tool-result continuation when the official client's local account metadata explicitly marks the subscription inactive. Missing metadata and Pi connection markers are not treated as entitlement evidence.
+- Qualify the complete raw-tool batch path on Muse Code 1.4.20 after the official client automatically upgraded during acceptance.
+
 ## 0.2.0 (2026-11-13)
 
 First pi-pod release, published as `@pipod/pi-muse-subscription` from the upstream 0.1.0 fork.

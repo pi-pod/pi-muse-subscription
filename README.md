@@ -6,8 +6,9 @@ The pi-pod fork of [pi-muse-subscription](https://github.com/jkeskikangas/pi-mus
 
 - Supports `/login muse-sdk` through the official Muse SDK device-code flow, including pipod's remote login UI. Pi stores only a non-secret connection marker; official-client credentials remain on the machine running inference.
 - Muse 1.4.18 requires trust before it loads MCP tools. Only an empty, private workspace is trusted; your project rules, hooks and extra MCP servers are not loaded a second time. Pi tools still operate in Pi's real working directory.
-- Complete tool batches wait for the qualified raw-log event even when a typed tool-start event arrives first. Raw batches are enabled only on Muse 1.4.14 and 1.4.18; other builds use the stable single-call path.
+- Complete tool batches wait for the qualified raw-log event even when a typed tool-start event arrives first. Raw batches are enabled only on Muse 1.4.14, 1.4.18 and 1.4.20; other builds use the stable single-call path.
 - Shutdown waits for Muse's session writer lease before a Pi reload or replacement, so resume does not spuriously fork.
+- Explicit `subs_active: false` in the official client's saved account metadata blocks new turns and tool-result continuations with an actionable inactive-plan error. Missing metadata is not interpreted as proof of entitlement.
 - `pipod.clientExtensions: []` declares that the provider runs only in the pod, not again in the launcher's rendering process. This requires pipod's client-entrypoint support; older pipod versions do not honor that declaration.
 
 ### Connect inside pipod
@@ -27,7 +28,7 @@ pi install npm:@pipod/pi-muse-subscription
 /model muse-sdk/muse-spark-1.3
 ```
 
-Qualified host: Pi 1.5.2, Node 26, and Muse Code 1.4.18. Requires Node ≥ 22.19 and Muse Code ≥ 1.4.14 signed in with your subscription
+Qualified host: Pi 1.5.2, Node 26, and Muse Code 1.4.18 / 1.4.20. Requires Node ≥ 22.19 and Muse Code ≥ 1.4.14 signed in with your subscription
 (`brew install muse-code` or `curl -fsSL https://dev.meta.ai/install.sh | sh`, then `muse` → `/login`).
 
 A Muse Code subscription key is accepted only from the Muse Code client. pi's built-in `meta`

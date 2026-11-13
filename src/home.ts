@@ -1,10 +1,20 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
+
+/** Read only the client's entitlement hint, never export or reuse its credentials. */
+export function assertMuseSubscription(userConfigDir: string): void {
+	let metadata: { providers?: { meta?: { subs_active?: unknown } } };
+	try { metadata = JSON.parse(readFileSync(join(userConfigDir, "auth.json"), "utf8")); }
+	catch { return; } // Other client credential backends/versions may not expose this hint.
+	if (metadata?.providers?.meta?.subs_active === false) {
+		throw new Error("Muse Code's saved account metadata marks the subscription inactive (subs_active=false). Activate the intended subscription and refresh sign-in with muse on this machine. No new inference was requested; a Pi connection marker is not proof of an active plan.");
+	}
+}
 
 /** Skill activation map that turns every listed skill off: `{ scope: { path: "off" } }`. */
 export type SkillsOff = Record<string, Record<string, "off">>;

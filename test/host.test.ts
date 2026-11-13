@@ -231,6 +231,19 @@ describe("muse serve host", () => {
 		h.provider.shutdown();
 	});
 
+	it("does not start inference for explicitly inactive account metadata", async () => {
+		const inactive = mkdtempSync(join(root, "inactive-account-"));
+		writeFileSync(join(inactive, "auth.json"), JSON.stringify({ providers: { meta: { subs_active: false } } }));
+		const h = harness(undefined, { userConfigDir: inactive });
+		try {
+			const result = await h.call([user("do not bill an inactive plan")]);
+			assert.equal(result.msg.stopReason, "error");
+			assert.match(result.msg.errorMessage ?? "", /subscription inactive/);
+			assert.equal(h.hosts.length, 0);
+			assert.equal(result.requests.length, 0);
+		} finally { await h.provider.shutdown(); }
+	});
+
 	it("does not start a host for an already cancelled request", async () => {
 		const h = harness();
 		const controller = new AbortController();

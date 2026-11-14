@@ -19,6 +19,9 @@ export interface CatalogRow {
 export const SNAPSHOT: CatalogRow[] = [
 	{ modelId: "muse-spark-1.3", displayLabel: "Muse Spark 1.3", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh", "max"] },
 	{ modelId: "muse-wonder-1.0", displayLabel: "Muse Wonder 1.0", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+	{ modelId: "muse-ember-1.0", displayLabel: "Muse Ember 1.0", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+	{ modelId: "muse-spark-1.3-contributor", displayLabel: "Muse Spark 1.3 (Contributor)", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+	{ modelId: "muse-spark-1.2-contributor", displayLabel: "Muse Spark 1.2 (Contributor)", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh"] },
 	{ modelId: "muse-spark-1.2", displayLabel: "Muse Spark 1.2", contextLimit: 1_007_997, outputLimit: 128_000, variants: ["minimal", "low", "medium", "high", "xhigh"] },
 ];
 

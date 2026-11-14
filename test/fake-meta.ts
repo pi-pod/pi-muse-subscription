@@ -61,6 +61,7 @@ export function reply(r: Reply): string {
 }
 
 export class FakeMeta {
+	readonly modelIds = ["muse-spark-1.3", "muse-wonder-1.0"];
 	readonly bodies: Json[] = [];
 	private script: Responder[] = [];
 	private server?: Server;
@@ -70,7 +71,7 @@ export class FakeMeta {
 		this.server = createServer((req, res) => {
 			if (req.method === "GET" && req.url?.endsWith("/muse-code/models")) {
 				res.writeHead(200, { "content-type": "application/json" });
-				res.end(JSON.stringify({ object: "list", data: ["muse-spark-1.3", "muse-wonder-1.0"].map((id) => ({ id, object: "model", metadata: { "muse-code": { release_date: "2026-01-01", is_hidden: false, limit: { context: 1_000_000, output: 4096 } } } })) }));
+				res.end(JSON.stringify({ object: "list", data: this.modelIds.map((id) => ({ id, object: "model", metadata: { "muse-code": { release_date: "2026-01-01", is_hidden: false, limit: { context: 1_000_000, output: 4096 } } } })) }));
 				return;
 			}
 			let raw = "";

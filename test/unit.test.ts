@@ -71,6 +71,15 @@ describe("subscription safety", () => {
 });
 
 describe("models", () => {
+	it("keeps the full native snapshot and every discovered model", () => {
+		assert.deepEqual(museModels().map((m) => m.id).sort(), [
+			"muse-ember-1.0", "muse-spark-1.2", "muse-spark-1.2-contributor",
+			"muse-spark-1.3", "muse-spark-1.3-contributor", "muse-wonder-1.0",
+		]);
+		const rows = [{ modelId: "muse-future-test", variants: ["low", "high"] }];
+		assert.deepEqual(museModels(rows).map((m) => m.id), ["muse-future-test"]);
+	});
+
 	it("maps pi thinking levels onto Muse efforts", () => {
 		assert.equal(museEffort(undefined), "none");
 		assert.equal(museEffort("xhigh"), "xhigh");

@@ -17,6 +17,7 @@ mkdirSync(ws);
 writeFileSync(join(ws, "secret.txt"), "THE-SECRET-IS-42\n");
 
 const fake = await new FakeMeta().start();
+fake.modelIds.push("muse-catalog-e2e");
 let sawResult = "";
 fake.queue(
 	(body) => reply({ text: "Reading it.", calls: [{ name: toolNames(body).includes("mcp__pi/read") ? "mcp__pi.read" : "missing", args: { path: "secret.txt" }, id: "call_e2e" }] }),
@@ -27,16 +28,31 @@ fake.queue(
 	},
 );
 
-const child = spawn("pi", ["-e", join(import.meta.dirname, "..", "src", "index.ts"), "--model", "muse-sdk/muse-spark-1.3", "--no-session", "-p", "What does secret.txt say?"], {
+const env = {
+	...process.env,
+	HOME: root,
+	XDG_CONFIG_HOME: xdg,
+	XDG_DATA_HOME: join(root, "data"),
+	XDG_CACHE_HOME: join(root, "cache"),
+	XDG_STATE_HOME: join(root, "state"),
+	PI_CODING_AGENT_DIR: join(root, "agent"),
+	TBH_CREDENTIAL_BACKEND: "file",
+	TBH_DISABLE_TELEMETRY: "1",
+	PI_MUSE_SDK_TEST_SETTINGS: JSON.stringify({ endpoint_transport: { base_url: fake.baseUrl, auth: "bearer" } }),
+};
+const extension = join(import.meta.dirname, "..", "src", "index.ts");
+const listing = spawn("pi", ["--no-extensions", "-e", extension, "--no-session", "--list-models", "muse-sdk"], { cwd: ws, env });
+let listed = "";
+let listingError = "";
+listing.stdout.on("data", (data) => { listed += data; });
+listing.stderr.on("data", (data) => { listingError = (listingError + data).slice(-2000); });
+assert.equal(await new Promise((resolve, reject) => { listing.on("error", reject); listing.on("close", resolve); }), 0, listingError);
+assert.match(listed, /muse-catalog-e2e/, "startup lists live models absent from the bundled snapshot");
+assert.equal(fake.bodies.length, 0, "model discovery never requests inference");
+
+const child = spawn("pi", ["-e", extension, "--model", "muse-sdk/muse-spark-1.3", "--no-session", "-p", "What does secret.txt say?"], {
 	cwd: ws,
-	env: {
-		...process.env,
-		XDG_CONFIG_HOME: xdg,
-		PI_CODING_AGENT_DIR: join(root, "agent"),
-		TBH_CREDENTIAL_BACKEND: "file",
-		TBH_DISABLE_TELEMETRY: "1",
-		PI_MUSE_SDK_TEST_SETTINGS: JSON.stringify({ endpoint_transport: { base_url: fake.baseUrl, auth: "bearer" } }),
-	},
+	env,
 	stdio: ["ignore", "pipe", "pipe"],
 });
 let stdout = "";

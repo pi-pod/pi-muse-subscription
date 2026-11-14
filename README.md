@@ -4,6 +4,7 @@ The pi-pod fork of [pi-muse-subscription](https://github.com/jkeskikangas/pi-mus
 
 ## pi-pod changes
 
+- Loads the complete official-client catalog before startup model selection and `--list-models`. The offline snapshot includes Wonder 1.0, Ember 1.0, Spark 1.3 / 1.2 and both Spark Contributor variants. Listing Contributor models does not change your saved contributor-mode setting or bypass subscription checks.
 - Supports `/login muse-sdk` through the official Muse SDK device-code flow, including pipod's remote login UI. Pi stores only a non-secret connection marker; official-client credentials remain on the machine running inference.
 - Muse 1.4.18 requires trust before it loads MCP tools. Only an empty, private workspace is trusted; your project rules, hooks and extra MCP servers are not loaded a second time. Pi tools still operate in Pi's real working directory.
 - Complete tool batches wait for the qualified raw-log event even when a typed tool-start event arrives first. Raw batches are enabled only on Muse 1.4.14, 1.4.18 and 1.4.20; other builds use the stable single-call path.

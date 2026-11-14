@@ -19,7 +19,7 @@ export const PROVIDER = "muse-sdk";
  * login (subscription). pi keeps its own agent loop, tools, prompt and compaction; a `muse serve`
  * host is used only as the authenticated model transport.
  */
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI): Promise<void> {
 	const env = process.env;
 	const config = resolveConfig({ cwd: process.cwd(), agentDir: getAgentDir(), home: homedir(), env });
 	const baseDir = join(getAgentDir(), "muse-sdk");
@@ -66,20 +66,12 @@ export default function (pi: ExtensionAPI) {
 			models,
 			streamSimple: provider.streamSimple,
 		});
-	register();
 
-	// Pick up the models the user's plan offers from Muse Code's live catalog.
-	let refreshed = false;
+	// Pi awaits factories for startup model selection and --list-models.
+	// Register the complete native catalog there, not only after session_start.
 	let disposed = false;
 	const discoveryController = new AbortController();
-	let discovery: Promise<void> | undefined;
-	pi.on("session_start", () => {
-		if (refreshed) return;
-		refreshed = true;
-		discovery = listModels(hostEnv, discoveryController.signal).then((rows) => {
-			if (rows && !disposed) register(museModels(rows));
-		});
-	});
+	const discovery = listModels(hostEnv, discoveryController.signal);
 
 	const docs = { readme: getReadmePath(), docs: getDocsPath(), examples: getExamplesPath() };
 	pi.on("before_agent_start", (event, ctx) => applyMusePrompt(event, ctx.model, PROVIDER, config.promptMode ?? "muse", docs));
@@ -93,4 +85,6 @@ export default function (pi: ExtensionAPI) {
 		bridge.close();
 	});
 	process.once("exit", onExit);
+	const rows = await discovery;
+	if (!disposed) register(rows ? museModels(rows) : undefined);
 }

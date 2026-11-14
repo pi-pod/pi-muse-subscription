@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 (2026-11-13)
+
+- Discover the complete official-client catalog before startup model selection and `--list-models`, rather than waiting for a session-start event.
+- Include Ember 1.0 and both Spark Contributor variants in the offline snapshot without changing contributor-mode or subscription policy.
+- Isolate every E2E home/XDG directory so fake catalog discovery cannot populate the real client's model cache.
+
 ## 0.2.1 (2026-11-13)
 
 - Refuse new inference and tool-result continuation when the official client's local account metadata explicitly marks the subscription inactive. Missing metadata and Pi connection markers are not treated as entitlement evidence.

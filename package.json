@@ -1,6 +1,6 @@
 {
   "name": "@pipod/pi-muse-subscription",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Meta Muse models in pi through the Muse Code SDK on your Muse Code subscription, with pi's own agent loop, tools and prompt.",
   "keywords": [
     "pi-package",
